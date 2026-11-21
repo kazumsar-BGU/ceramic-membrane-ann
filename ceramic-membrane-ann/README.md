@@ -56,5 +56,5 @@ python figures/fig_hist.py          # and fig_membrane.py, fig_sinter.py, fig_pr
 
 ## Licence
 
-No licence has been chosen yet. Add one before the repository is made public (for example MIT for the code and
-CC BY 4.0 for the data table). The data values are taken from the publications listed in `data/references.csv`.
+The code is released under the MIT License (see `LICENSE`). The data table compiles values from the
+publications listed in `data/references.csv`.
