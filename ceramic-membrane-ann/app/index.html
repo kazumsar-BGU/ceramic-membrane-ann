@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sintering Pore Size AI Predictor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .btn-disabled { opacity: 0.5; cursor: not-allowed; }
+        .loader { border: 2px solid #374151; border-top: 2px solid #22d3ee; border-radius: 50%; width: 12px; height: 12px; animation: spin 1s linear infinite; display: inline-block; margin-right: 5px;}
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .metric-cell { font-variant-numeric: tabular-nums; }
+        .nr { color: #f59e0b; font-style: italic; }
+        code { background:#111827; padding:1px 4px; border-radius:3px; font-size:10px; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 p-6 min-h-screen">
+
+<div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+    <!-- LEFT COLUMN -->
+    <div class="space-y-6">
+
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h2 class="text-xl font-bold text-cyan-400 mb-4">1. Add Experimental Data</h2>
+            <div class="grid grid-cols-2 gap-4">
+                <div><label class="block text-xs text-gray-400 mb-1">Sintering Temp (°C)</label><input type="number" id="sinteringTemp" class="w-full bg-gray-700 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 1200"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Dwell Time (min)</label><input type="number" id="dwellTime" class="w-full bg-gray-700 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 60"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Particle Size (µm)</label><input type="number" id="particleSize" class="w-full bg-gray-700 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 10.5"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Bulk Density (g/cm³)</label><input type="number" id="bulkDensity" class="w-full bg-gray-700 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 2.1"></div>
+                <div><label class="block text-xs text-gray-400 mb-1">Heating Rate (°C/min)</label><input type="number" id="heatingRate" class="w-full bg-gray-700 border border-gray-600 rounded p-2 text-white focus:outline-none focus:border-cyan-500" placeholder="e.g. 5"></div>
+                <div class="bg-gray-700/50 p-2 rounded border border-cyan-900/50">
+                    <label class="block text-xs text-cyan-300 mb-1 font-bold">Target: Pore Size (µm)</label>
+                    <input type="number" id="poreSize" class="w-full bg-gray-700 border border-cyan-700 rounded p-2 text-white focus:outline-none focus:border-cyan-400" placeholder="Measured result">
+                </div>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-3 leading-snug">Leave a feature blank to record it as <span class="nr">NR</span> (not reported). Blank features are <em>not</em> filled in here — they are imputed inside each training fold at evaluation time.</p>
+            <div class="mt-4 flex gap-3">
+                <button id="addData" class="flex-1 bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-2 px-4 rounded transition">Add Point (as new paper)</button>
+                <button id="clearData" class="px-4 py-2 border border-red-500 text-red-500 hover:bg-red-500/10 rounded transition">Reset Dataset</button>
+            </div>
+        </div>
+
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-white">Dataset <span id="datasetCount" class="text-sm text-gray-400 font-normal"></span></h2>
+                <span id="status" class="text-xs text-yellow-400 font-mono"></span>
+            </div>
+            <div id="missingNote" class="text-[11px] text-amber-400/80 mb-2 font-mono"></div>
+            <div class="overflow-y-auto max-h-60 border border-gray-700 rounded">
+                <table class="w-full text-xs text-left text-gray-300">
+                    <thead class="text-[10px] text-gray-400 uppercase bg-gray-700 sticky top-0">
+                        <tr>
+                            <th class="px-2 py-2">Paper</th>
+                            <th class="px-2 py-2">Temp</th>
+                            <th class="px-2 py-2">Time</th>
+                            <th class="px-2 py-2">Particle</th>
+                            <th class="px-2 py-2">Density</th>
+                            <th class="px-2 py-2">Rate</th>
+                            <th class="px-2 py-2 text-cyan-400">Pore</th>
+                            <th class="px-2 py-2"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="dataTableBody" class="divide-y divide-gray-700"></tbody>
+                </table>
+            </div>
+
+            <div class="mt-4">
+                <button id="runEvalBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 px-4 rounded shadow-lg transition">
+                    Run Full Evaluation (Nested CV · LOPO · All Models)
+                </button>
+                <div class="mt-3 p-3 rounded border border-emerald-800/60 bg-emerald-900/10">
+                    <p class="text-[11px] text-emerald-300/90 leading-snug">
+                        <span class="font-bold">Identical conditions.</span> All five models receive the <em>same</em> feature matrix, the <em>same</em> folds, the <em>same</em> fold-internal imputer and scaler, and the <em>same</em> hyperparameter-selection procedure (inner 3-fold search on the training split only). No model gets a pipeline the others do not.
+                    </p>
+                </div>
+                <div class="mt-2 p-3 rounded border border-amber-800/60 bg-amber-900/10">
+                    <p class="text-[11px] text-amber-300/90 leading-snug">
+                        <span class="font-bold">Leakage control.</span> Missing values (<span class="nr">NR</span>), the min–max scaler, and every hyperparameter are fitted <em>inside</em> the training split of each fold. The held-out rows enter only at scoring time. Feature importance is likewise measured on held-out rows.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- 5-Fold CV Results -->
+        <div id="cvResultsBox" class="hidden bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h3 class="text-base font-bold text-emerald-400 mb-3">5-Fold Cross-Validation <span class="text-xs text-gray-500 font-normal">(mean ± std across folds · nested hyperparameter selection)</span></h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-[10px] text-gray-400 border-b border-gray-700">
+                        <tr>
+                            <th class="py-2 uppercase">Model</th>
+                            <th class="py-2"><span class="uppercase">MAE</span> (µm)</th>
+                            <th class="py-2"><span class="uppercase">RMSE</span> (µm)</th>
+                            <th class="py-2 uppercase">R²</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cvResultsBody" class="divide-y divide-gray-700 metric-cell"></tbody>
+                </table>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-2 leading-snug">Outer folds score the model; inner folds pick its hyperparameters. The outer test rows influence neither.</p>
+        </div>
+
+        <!-- LOPO Results -->
+        <div id="lopoResultsBox" class="hidden bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h3 class="text-base font-bold text-purple-400 mb-3">Leave-One-Paper-Out Validation <span class="text-xs text-gray-500 font-normal">(pooled predictions across <span id="lopoNPapers">18</span> held-out papers)</span></h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-[10px] text-gray-400 border-b border-gray-700">
+                        <tr>
+                            <th class="py-2 uppercase">Model</th>
+                            <th class="py-2"><span class="uppercase">MAE</span> (µm)</th>
+                            <th class="py-2"><span class="uppercase">RMSE</span> (µm)</th>
+                            <th class="py-2 uppercase">R²</th>
+                        </tr>
+                    </thead>
+                    <tbody id="lopoResultsBody" class="divide-y divide-gray-700 metric-cell"></tbody>
+                </table>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-2 leading-snug">Each paper is held out once and predicted by a model trained on the other 17 — including that model's imputation means, scaler and hyperparameters, all re-selected from those 17 papers alone. The inner selection folds are themselves grouped by paper, so selection is optimised for cross-paper transfer rather than within-paper interpolation.</p>
+        </div>
+
+        <!-- Protocol / hyperparameter provenance -->
+        <div id="protocolBox" class="hidden bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h3 class="text-base font-bold text-sky-400 mb-3">Hyperparameter Provenance</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-[10px] text-gray-400 border-b border-gray-700">
+                        <tr>
+                            <th class="py-2 uppercase">Model</th>
+                            <th class="py-2 uppercase">Search space</th>
+                            <th class="py-2 uppercase">Selected across CV folds</th>
+                            <th class="py-2 uppercase">Selected on full data</th>
+                        </tr>
+                    </thead>
+                    <tbody id="protocolBody" class="divide-y divide-gray-700"></tbody>
+                </table>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-2 leading-snug">
+                Every grid is searched by the same rule: inner 3-fold split of the outer training rows, lowest mean MAE (µm) wins, ties broken toward the simpler setting. Nothing here was chosen by looking at the reported CV or LOPO numbers. Where a model's selection varies across folds, that instability is itself a result worth reporting.
+                <br><span class="text-gray-400">The ANN's 6 candidates are the smallest tuned search here — Gradient Boosting explores 20 — so no result can be attributed to the proposed model having been given a wider search than its baselines. Linear regression is the exception in the other direction: OLS has no hyperparameters to search.</span>
+            </p>
+        </div>
+
+        <!-- Imputation audit -->
+        <div id="imputeBox" class="hidden bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700">
+            <h3 class="text-base font-bold text-amber-400 mb-3">Imputation Audit <span class="text-xs text-gray-500 font-normal">(fold-wise fill values)</span></h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs text-left">
+                    <thead class="text-[10px] text-gray-400 border-b border-gray-700">
+                        <tr>
+                            <th class="py-2 uppercase">Feature</th>
+                            <th class="py-2 uppercase">Missing</th>
+                            <th class="py-2 uppercase">CV fill (mean ± std over 5 folds)</th>
+                            <th class="py-2 uppercase">LOPO fill (min – max)</th>
+                            <th class="py-2 uppercase">Full-data fill</th>
+                        </tr>
+                    </thead>
+                    <tbody id="imputeBody" class="divide-y divide-gray-700 metric-cell"></tbody>
+                </table>
+            </div>
+            <p class="text-[11px] text-gray-500 mt-2 leading-snug">The spread across folds is the quantity that was previously hidden: under a global-mean scheme every fold uses one identical fill value computed from all rows, test rows included. "Full-data fill" is used only by the final deployed ANN, where all rows are training rows by definition.</p>
+        </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div class="space-y-6">
+
+        <div class="bg-gray-800 p-6 rounded-lg shadow-lg border border-gray-700 relative overflow-hidden">
+            <div class="absolute top-0 right-0 p-4 opacity-10">
+                <svg class="w-24 h-24 text-white" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"></path></svg>
+            </div>
+            <h2 class="text-xl font-bold text-purple-400 mb-4">2. Predict (Final ANN)</h2>
+            <div class="grid grid-cols-3 gap-3 mb-4">
+                <div><label class="text-[10px] uppercase text-gray-500">Temp</label><input type="number" id="pred_sinteringTemp" value="1250" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm"></div>
+                <div><label class="text-[10px] uppercase text-gray-500">Time</label><input type="number" id="pred_dwellTime" value="60" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm"></div>
+                <div><label class="text-[10px] uppercase text-gray-500">Part. Size</label><input type="number" id="pred_particleSize" value="10" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm"></div>
+                <div><label class="text-[10px] uppercase text-gray-500">Density</label><input type="number" id="pred_bulkDensity" value="2.0" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm"></div>
+                <div><label class="text-[10px] uppercase text-gray-500">Rate</label><input type="number" id="pred_heatingRate" value="5" class="w-full bg-gray-900 border border-gray-600 rounded p-2 text-sm"></div>
+            </div>
+            <button id="predictBtn" disabled class="btn-disabled w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded transition">Predict Pore Size</button>
+            <div class="mt-4 text-center p-4 bg-gray-900 rounded border border-purple-900/50">
+                <div class="text-xs text-gray-400 uppercase tracking-widest">Predicted Result</div>
+                <div id="predictionResult" class="text-3xl font-mono text-purple-300 mt-1">- µm</div>
+                <div id="predictNote" class="text-[11px] text-amber-400/80 mt-2"></div>
+            </div>
+        </div>
+
+        <div id="annDetail" class="hidden space-y-4">
+            <div class="grid grid-cols-3 gap-4">
+                <div class="bg-gray-800 p-3 rounded text-center border border-gray-700"><div class="text-[10px] text-gray-500 uppercase">ANN MAE</div><div id="annMae" class="text-base font-bold text-white">-</div></div>
+                <div class="bg-gray-800 p-3 rounded text-center border border-gray-700"><div class="text-[10px] text-gray-500 uppercase">ANN RMSE</div><div id="annRmse" class="text-base font-bold text-white">-</div></div>
+                <div class="bg-gray-800 p-3 rounded text-center border border-gray-700"><div class="text-[10px] text-gray-500 uppercase">ANN R²</div><div id="annR2" class="text-base font-bold text-green-400">-</div></div>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 h-72">
+                <h3 class="text-sm font-semibold text-gray-400 mb-1">ANN Prediction vs Actual (5-Fold CV)</h3>
+                <p class="text-[10px] text-gray-500 mb-2">Each point predicted by the fold that held it out, using that fold's own imputer, scaler and selected hyperparameters. Points whose row contained an <span class="nr">NR</span> feature are marked separately.</p>
+                <div class="h-52 w-full"><canvas id="predActualChart"></canvas></div>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700 h-80">
+                <h3 class="text-sm font-semibold text-gray-400 mb-1">Permutation Feature Importance <span class="text-[10px] font-normal text-emerald-400">— held-out rows only</span></h3>
+                <p class="text-[10px] text-gray-500 mb-2">ΔMAE (µm) when a feature is shuffled among the <em>held-out</em> rows of each CV fold, averaged over 5 folds × 10 shuffles. Bars show the mean, whiskers ± 1 std across folds. Features marked * are majority-imputed.</p>
+                <div class="mb-2"><select id="impModel" class="bg-gray-900 border border-gray-600 rounded p-1 text-[11px]"></select></div>
+                <div class="h-52 w-full"><canvas id="importanceChart"></canvas></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// =========================================================================
+// CONFIG
+// =========================================================================
+const K_FOLDS = 5;
+const INNER_K = 3;              // inner folds used for hyperparameter selection
+const IMP_REPEATS = 10;         // shuffles per feature per fold (importance)
+const SEED = 42;
+const FEATURE_KEYS = ['sinteringTemp', 'dwellTime', 'particleSize', 'bulkDensity', 'heatingRate'];
+const featureNames = ['Sintering Temp', 'Dwell Time', 'Particle Size', 'Bulk Density', 'Heating Rate'];
+
+// ANN pieces that are NOT searched (shared by every candidate configuration).
+// lr / batch / bootstrap were fixed before any evaluation was run and are not
+// touched again; the searched axes live in the grid further down.
+const ANN_BASE = { dropout: 0.0, lr: 0.005, batchSize: 16, l2: 8e-4, bootstrap: 0.95 };
+// Ensemble size and epochs are a compute budget, not a fitted parameter: the
+// ensemble average converges as members are added, so a larger ensemble is
+// strictly less noisy, never better-fitted to the test rows.
+//
+// selEnsemble is 2 rather than 1 deliberately. Scoring a candidate with a single
+// network makes the inner-fold MAE noisy enough that the search starts crowning
+// configurations that do not survive the refit - a winner's curse that gets
+// WORSE as the grid grows. Measured: cutting to 1 member (and widening the grid
+// to 24 candidates to spend the saving) moved CV MAE 3.307 -> 3.717 and R2
+// 0.422 -> 0.167. Selection fidelity is worth more here than search width.
+const BUDGET = { selEnsemble: 2, selEpochs: 150, refitEnsemble: 12, refitEpochs: 300 };
+
+// The feature set is a property of the experiment, not a per-model choice:
+// every model is scored on this same matrix.
+const FEATURE_MODE = 'augmented';
+
+// =========================================================================
+// DOM
+// =========================================================================
+const ui = {};
+['sinteringTemp','dwellTime','particleSize','bulkDensity','heatingRate','poreSize','addData','clearData',
+ 'runEvalBtn','predictBtn','predictionResult','predictNote','status','dataTableBody','datasetCount','missingNote',
+ 'cvResultsBox','cvResultsBody','lopoResultsBox','lopoResultsBody','lopoNPapers',
+ 'protocolBox','protocolBody','imputeBox','imputeBody','impModel',
+ 'annDetail','annMae','annRmse','annR2','predActualChart','importanceChart',
+ 'pred_sinteringTemp','pred_dwellTime','pred_particleSize','pred_bulkDensity','pred_heatingRate'
+].forEach(id => ui[id] = document.getElementById(id));
+
+// =========================================================================
+// DATASET (built from Dataset_Audit_v2.xlsx)
+// rows = [temp, dwellTime, particle, density, rate, pore, paperId]
+// "NR" = not reported. These are kept as MISSING (null) all the way through;
+// they are filled in only inside a training split - never globally.
+// row #29 (pore=NR) dropped at source
+// =========================================================================
+const RAW_ROWS = [
+    [1100, "NR", 89,    2.56,   2,    0.23,    13],
+    [1150, 60,   100,   "NR",   2,    1.5,     14],
+    [1150, 60,   100,   "NR",   2,    2,       14],
+    [1150, 60,   100,   "NR",   2,    2.3,     14],
+    [1150, 60,   100,   "NR",   2,    2.3,     14],
+    [1150, 60,   100,   "NR",   2,    2.7,     14],
+    [1150, 60,   100,   "NR",   2,    2.8,     14],
+    [1150, 60,   100,   "NR",   2,    3.4,     14],
+    [1000, 60,   "NR",  "NR",   5,    1.3,     15],
+    [1300, 120,  0.169, "NR",   5,    0.2046,  16],
+    [1100, 120,  0.169, "NR",   5,    0.0652,  16],
+    [850,  360,  "NR",  "NR",   0.5,  0.217,   17],
+    [900,  360,  "NR",  "NR",   0.5,  0.253,   17],
+    [950,  360,  "NR",  "NR",   0.5,  0.304,   17],
+    [1000, 360,  "NR",  "NR",   0.5,  0.336,   17],
+    [1000, 60,   9.6,   "NR",   10,   0.02,    18],
+    [1200, 60,   9.6,   "NR",   10,   3.49,    18],
+    [1250, 60,   9.6,   "NR",   10,   3.32,    18],
+    [1300, 60,   9.6,   "NR",   10,   4.28,    18],
+    [1000, 60,   8.97,  "NR",   10,   7.68,    18],
+    [1200, 60,   8.97,  "NR",   10,   12.72,   18],
+    [1250, 60,   8.97,  "NR",   10,   22.31,   18],
+    [1300, 60,   8.97,  "NR",   10,   39.4,    18],
+    [1150, 60,   8.97,  "NR",   10,   1.65,    18],
+    [1200, 60,   8.97,  "NR",   10,   2.89,    18],
+    [1250, 60,   8.97,  "NR",   10,   27.72,   18],
+    [1300, 60,   8.97,  "NR",   10,   48.93,   18],
+    [1000, 60,   8.97,  "NR",   10,   0.69,    18],
+    [1200, 60,   8.97,  "NR",   10,   3.77,    18],
+    [1250, 60,   8.97,  "NR",   10,   11.09,   18],
+    [1300, 60,   8.97,  "NR",   10,   23.48,   18],
+    [1150, 60,   8.97,  "NR",   10,   1.65,    18],
+    [1350, 120,  27.5,  3.99,   2.5,  7.71,    19],
+    [1400, 120,  27.5,  3.99,   2.5,  7.4,     19],
+    [1450, 120,  27.5,  3.99,   2.5,  6.8,     19],
+    [1500, 120,  27.5,  3.99,   2.5,  6.63,    19],
+    [1050, 20,   101.94,"NR",   30,   9,       20],
+    [1050, 20,   121.55,"NR",   30,   10,      20],
+    [1050, 20,   141.16,"NR",   30,   12,      20],
+    [1050, 20,   160.78,"NR",   30,   15,      20],
+    [1100, 20,   85,    "NR",   30,   5,       20],
+    [1100, 20,   101.2, "NR",   30,   5,       20],
+    [1100, 20,   85.8,  "NR",   30,   5,       20],
+    [1100, 20,   86.2,  "NR",   30,   5,       20],
+    [1150, 60,   14,    "NR",   5,    5.1,     21],
+    [1200, 60,   14,    "NR",   5,    15.3,    21],
+    [1250, 60,   14,    "NR",   5,    18.5,    21],
+    [1300, 60,   14,    "NR",   5,    27.7,    21],
+    [1200, 60,   40,    "NR",   5,    6,       21],
+    [1190, 60,   0.6,   "NR",   "NR", 0.3,     21],
+    [900,  60,   74,    "NR",   2,    0.116,   22],
+    [1000, 60,   74,    "NR",   2,    0.164,   22],
+    [1100, 60,   74,    "NR",   2,    0.179,   22],
+    [1150, 30,   115,   "NR",   5,    0.1,     23],
+    [1000, 30,   90,    1.5776, 5,    0.0985,  24],
+    [1000, 30,   90,    1.5688, 5,    0.0838,  24],
+    [1100, 180,  90,    1.5988, 5,    0.0939,  24],
+    [1100, 180,  90,    1.5645, 5,    0.0589,  24],
+    [1200, 180,  3.29,  "NR",   10,   8,       25],
+    [1000, 120,  250,   "NR",   5,    0.0164,  26],
+    [1000, 120,  250,   "NR",   5,    0.00205, 26],
+    [1000, 120,  250,   "NR",   5,    0.01505, 26],
+    [1000, 120,  250,   "NR",   5,    0.0037,  26],
+    [1100, 120,  0.5,   "NR",   5,    0.00203, 27],
+    [1200, 120,  0.5,   "NR",   5,    0.00203, 27],
+    [1300, 120,  0.5,   "NR",   5,    0.00202, 27],
+    [1400, 120,  0.5,   "NR",   5,    0.00203, 27],
+    [1500, 120,  0.5,   "NR",   5,    0.00202, 27],
+    [1197, 253,  100,   2.16,   5,    1,       28],
+    [1100, 120,  50,    2.12,   3,    1.9,     29],
+    [1100, 120,  50,    2.1,    3,    2.1,     29],
+    [1100, 120,  50,    1.98,   3,    2.3,     29],
+    [1100, 120,  50,    1.81,   3,    3.4,     29],
+    [950,  120,  315,   "NR",   5,    0.41,    30],
+    [1000, 120,  315,   "NR",   5,    0.6,     30],
+    [1050, 120,  315,   "NR",   5,    0.92,    30],
+    [1100, 120,  315,   "NR",   5,    1.44,    30],
+    [1150, 120,  315,   "NR",   5,    1.34,    30]
+];
+
+let dataset = [];
+let finalAnnModel = null;
+let finalNorm = {};
+let finalImpute = null;   // imputer fitted on 100% of the data - final model only
+let finalFeatureMode = 'augmented';
+let predActualChart = null;
+let importanceChart = null;
+let importanceByModel = {};
+
+function buildDataset() {
+    // NOTE: no global mean imputation here. "NR" becomes null and stays null;
+    // the fill value is decided per training split at evaluation time.
+    dataset = RAW_ROWS.map(r => ({
+        features: {
+            sinteringTemp: r[0] === "NR" ? null : r[0],
+            dwellTime:     r[1] === "NR" ? null : r[1],
+            particleSize:  r[2] === "NR" ? null : r[2],
+            bulkDensity:   r[3] === "NR" ? null : r[3],
+            heatingRate:   r[4] === "NR" ? null : r[4],
+        },
+        label: r[5],
+        paperId: r[6]
+    }));
+    updateDataTable();
+}
+
+const isMissing = v => v === null || v === undefined || (typeof v === 'number' && isNaN(v));
+const rowHasMissing = d => FEATURE_KEYS.some(k => isMissing(d.features[k]));
+const tick = () => new Promise(r => setTimeout(r, 0));   // yield without RAF (RAF throttles when tab hidden)
+
+function cell(v, digits) {
+    return isMissing(v) ? '<span class="nr">NR</span>' : v.toFixed(digits);
+}
+
+function updateDataTable() {
+    ui.dataTableBody.innerHTML = dataset.map((p, i) => `
+        <tr class="hover:bg-gray-700/50">
+            <td class="py-1.5 px-2 text-gray-500">[${p.paperId}]</td>
+            <td class="py-1.5 px-2">${cell(p.features.sinteringTemp, 0)}</td>
+            <td class="py-1.5 px-2">${cell(p.features.dwellTime, 0)}</td>
+            <td class="py-1.5 px-2">${cell(p.features.particleSize, 2)}</td>
+            <td class="py-1.5 px-2">${cell(p.features.bulkDensity, 2)}</td>
+            <td class="py-1.5 px-2">${cell(p.features.heatingRate, 1)}</td>
+            <td class="py-1.5 px-2 font-medium text-cyan-400">${p.label.toFixed(4)}</td>
+            <td class="py-1.5 px-2 text-right"><button class="text-red-500 hover:text-red-400 text-xs" onclick="removeData(${i})">x</button></td>
+        </tr>`).join('');
+    const nPapers = new Set(dataset.map(d => d.paperId)).size;
+    ui.datasetCount.innerText = `${dataset.length} samples · ${nPapers} papers`;
+    ui.lopoNPapers.innerText = nPapers;
+
+    const counts = FEATURE_KEYS.map((k, j) => {
+        const n = dataset.filter(d => isMissing(d.features[k])).length;
+        return n ? `${featureNames[j]}: ${n}/${dataset.length}` : null;
+    }).filter(Boolean);
+    ui.missingNote.innerHTML = counts.length
+        ? `Missing (NR), imputed per training fold — ${counts.join(' · ')}`
+        : 'No missing values.';
+}
+
+window.removeData = (idx) => { dataset.splice(idx, 1); updateDataTable(); };
+
+ui.addData.addEventListener('click', () => {
+    const v = id => parseFloat(ui[id].value);
+    const label = v('poreSize');
+    if (isNaN(label)) { ui.status.innerText = 'Pore size required.'; setTimeout(()=>ui.status.innerText='', 2500); return; }
+    // A blank feature is recorded as missing (null), NOT filled from the dataset
+    // mean - otherwise the new point would carry information from every other row.
+    const f = {};
+    for (const k of FEATURE_KEYS) {
+        const x = v(k);
+        f[k] = isNaN(x) ? null : x;
+    }
+    const maxPaper = Math.max(0, ...dataset.map(d => d.paperId));
+    dataset.push({ features: f, label, paperId: maxPaper + 1 });
+    updateDataTable();
+});
+
+ui.clearData.addEventListener('click', () => {
+    if (confirm('Reset to dataset from xlsx?')) {
+        buildDataset();
+        finalAnnModel = null;
+        finalImpute = null;
+        ui.predictionResult.innerText = '- µm';
+        ui.predictNote.innerText = '';
+        ['cvResultsBox','lopoResultsBox','protocolBox','imputeBox','annDetail'].forEach(b => ui[b].classList.add('hidden'));
+        ui.predictBtn.disabled = true;
+        ui.predictBtn.classList.add('btn-disabled');
+    }
+});
+
+// =========================================================================
+// IMPUTATION  (fitted on TRAINING rows only)
+// =========================================================================
+function fitImputer(rows, trainIdx) {
+    const imp = {};
+    for (const k of FEATURE_KEYS) {
+        const vals = [];
+        for (const i of trainIdx) {
+            const v = rows[i].features[k];
+            if (!isMissing(v)) vals.push(v);
+        }
+        // Degenerate case: the feature is unobserved across the whole training
+        // split. Fall back to a constant 0 rather than borrowing a test value.
+        imp[k] = { value: vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : 0, n: vals.length };
+    }
+    return imp;
+}
+function applyImputer(rows, imp) {
+    return rows.map(d => {
+        const f = {};
+        for (const k of FEATURE_KEYS) f[k] = isMissing(d.features[k]) ? imp[k].value : d.features[k];
+        return { features: f, label: d.label, paperId: d.paperId };
+    });
+}
+
+// =========================================================================
+// FEATURE PROCESSING - ONE shared matrix for every model
+// log1p on skewed features (time, particle, rate) and on the label.
+// The mode is a property of the *experiment*, not of the model: whichever mode
+// is selected, all five models see byte-identical inputs.
+// =========================================================================
+function processFeatures(rows) {
+    return rows.map(d => {
+        const f = d.features;
+        return [f.sinteringTemp, Math.log1p(f.dwellTime), Math.log1p(f.particleSize), f.bulkDensity, Math.log1p(f.heatingRate)];
+    });
+}
+function processFeaturesAugmented(rows) {
+    return rows.map(d => {
+        const f = d.features;
+        const t = f.sinteringTemp;
+        const lt = Math.log1p(f.dwellTime);
+        const lp = Math.log1p(f.particleSize);
+        const ld = f.bulkDensity;
+        const lr = Math.log1p(f.heatingRate);
+        return [
+            t, lt, lp, ld, lr,
+            t * lt,                       // temperature × dwell time (Arrhenius-like driving force)
+            t * lp,                       // temperature × particle size
+            lt * lr,                      // dwell × heating-rate
+            t / (lp + 1.0),               // thermal effect normalised by particle size
+            ((t - 1100) ** 2) / 1e4,      // centred quadratic temperature (non-linear effects)
+        ];
+    });
+}
+function buildX(rows, mode) {
+    return mode === 'augmented' ? processFeaturesAugmented(rows) : processFeatures(rows);
+}
+// Which matrix columns derive from each physical input - needed so permutation
+// importance shuffles a feature together with everything computed from it.
+function featureGroups(mode) {
+    return mode === 'augmented'
+        ? [[0, 5, 6, 8, 9], [1, 5, 7], [2, 6, 8], [3], [4, 7]]
+        : [[0], [1], [2], [3], [4]];
+}
+function processLabels(rows) { return rows.map(d => Math.log1p(d.label)); }
+function unlog(arr) { return arr.map(v => Math.exp(v) - 1); }
+
+// Per-fold min/max normalization, fitted on the training rows only.
+function normalize(Xtrain, Xtest) {
+    const n = Xtrain[0].length;
+    const min = new Array(n).fill(Infinity), max = new Array(n).fill(-Infinity);
+    for (const row of Xtrain) for (let j=0; j<n; j++) {
+        if (row[j] < min[j]) min[j] = row[j];
+        if (row[j] > max[j]) max[j] = row[j];
+    }
+    const range = min.map((m, j) => Math.max(max[j] - m, 1e-8));
+    const norm = X => X.map(r => r.map((v, j) => (v - min[j]) / range[j]));
+    return { Xtrain: norm(Xtrain), Xtest: norm(Xtest), min, max, range };
+}
+
+// =========================================================================
+// SEEDED RNG
+// =========================================================================
+function mulberry32(seed) {
+    return function() { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function seededShuffle(arr, seed) {
+    const r = mulberry32(seed);
+    for (let m = arr.length; m > 1;) { const i = Math.floor(r() * m--); [arr[m], arr[i]] = [arr[i], arr[m]]; }
+}
+
+// =========================================================================
+// METRICS
+// =========================================================================
+function metrics(preds, actuals) {
+    const n = preds.length;
+    let sumAbs = 0, sumSq = 0, sumAct = 0;
+    for (let i=0; i<n; i++) {
+        const e = preds[i] - actuals[i];
+        sumAbs += Math.abs(e); sumSq += e*e; sumAct += actuals[i];
+    }
+    const mean = sumAct/n;
+    const ssTot = actuals.reduce((a,v) => a + (v-mean)**2, 0);
+    return { mae: sumAbs/n, rmse: Math.sqrt(sumSq/n), r2: ssTot > 1e-9 ? 1 - sumSq/ssTot : 0 };
+}
+function meanStd(arr) {
+    const m = arr.reduce((a,b)=>a+b,0)/arr.length;
+    const v = arr.reduce((a,b)=>a+(b-m)**2,0)/arr.length;
+    return { mean: m, std: Math.sqrt(v) };
+}
+
+// =========================================================================
+// LINEAR ALGEBRA (Ridge needs matrix inverse)
+// =========================================================================
+function matInv(M) {
+    const n = M.length;
+    const A = M.map((row, i) => [...row, ...Array(n).fill(0).map((_, j) => i===j ? 1 : 0)]);
+    for (let i=0; i<n; i++) {
+        let p = i;
+        for (let j=i+1; j<n; j++) if (Math.abs(A[j][i]) > Math.abs(A[p][i])) p = j;
+        [A[i], A[p]] = [A[p], A[i]];
+        const d = A[i][i];
+        if (Math.abs(d) < 1e-12) throw new Error('Singular matrix');
+        for (let j=0; j<2*n; j++) A[i][j] /= d;
+        for (let k=0; k<n; k++) if (k!==i) {
+            const f = A[k][i];
+            for (let j=0; j<2*n; j++) A[k][j] -= f * A[i][j];
+        }
+    }
+    return A.map(row => row.slice(n));
+}
+function matMul(A, B) {
+    const r = A.length, c = B[0].length, k = B.length;
+    const C = Array.from({length:r}, () => new Array(c).fill(0));
+    for (let i=0; i<r; i++) for (let j=0; j<c; j++) {
+        let s = 0; for (let t=0; t<k; t++) s += A[i][t] * B[t][j]; C[i][j] = s;
+    }
+    return C;
+}
+function transpose(A) { return A[0].map((_, j) => A.map(r => r[j])); }
+
+// =========================================================================
+// MODELS
+// Each exposes: async fit(Xnorm, ylog) and predict(Xnorm) -> array (logspace)
+// =========================================================================
+
+class LinearModel {
+    async fit(X, y) {
+        const Xb = X.map(r => [1, ...r]);
+        const Xt = transpose(Xb);
+        const XtX = matMul(Xt, Xb);
+        // Tiny ridge floor: a fold whose training split has a constant column
+        // (possible once imputation is fold-local) would otherwise be singular.
+        for (let i=1; i<XtX.length; i++) XtX[i][i] += 1e-8;
+        const Xty = matMul(Xt, y.map(v => [v]));
+        this.beta = matMul(matInv(XtX), Xty).map(r => r[0]);
+    }
+    predict(X) { return X.map(r => this.beta[0] + r.reduce((s, v, j) => s + v * this.beta[j+1], 0)); }
+    dispose() {}
+}
+
+class RidgeModel {
+    constructor(lambda) { this.lambda = lambda; }
+    async fit(X, y) {
+        const Xb = X.map(r => [1, ...r]);
+        const p = Xb[0].length;
+        const Xt = transpose(Xb);
+        const XtX = matMul(Xt, Xb);
+        for (let i=1; i<p; i++) XtX[i][i] += this.lambda;  // don't penalize bias
+        const Xty = matMul(Xt, y.map(v => [v]));
+        this.beta = matMul(matInv(XtX), Xty).map(r => r[0]);
+    }
+    predict(X) { return X.map(r => this.beta[0] + r.reduce((s, v, j) => s + v * this.beta[j+1], 0)); }
+    dispose() {}
+}
+
+// --- Decision tree (regression, used by RF and GB) ---
+function buildTree(X, y, depth, maxDepth, minSamples, featureSubset, rng) {
+    if (depth >= maxDepth || y.length < minSamples * 2) return { leaf: true, val: y.reduce((a,b)=>a+b,0)/y.length };
+    const yMean = y.reduce((a,b)=>a+b,0)/y.length;
+    const yVar = y.reduce((a,b)=>a+(b-yMean)**2,0);
+    if (yVar < 1e-10) return { leaf: true, val: yMean };
+
+    // Random feature subset
+    const allFeat = X[0].map((_,i)=>i);
+    seededShuffle(allFeat, Math.floor(rng() * 1e9));
+    const feats = allFeat.slice(0, Math.min(featureSubset, allFeat.length));
+
+    let best = { score: yVar, feat: -1, thr: 0 };
+    for (const f of feats) {
+        const pairs = X.map((row, i) => [row[f], y[i]]).sort((a,b) => a[0]-b[0]);
+        let leftSum = 0, leftSumSq = 0, leftN = 0;
+        let rightSum = pairs.reduce((s,p)=>s+p[1], 0);
+        let rightSumSq = pairs.reduce((s,p)=>s+p[1]*p[1], 0);
+        let rightN = pairs.length;
+        for (let i=0; i<pairs.length-1; i++) {
+            const v = pairs[i][1];
+            leftSum += v; leftSumSq += v*v; leftN++;
+            rightSum -= v; rightSumSq -= v*v; rightN--;
+            if (pairs[i][0] === pairs[i+1][0]) continue;
+            if (leftN < minSamples || rightN < minSamples) continue;
+            const leftVar = leftSumSq - leftSum*leftSum/leftN;
+            const rightVar = rightSumSq - rightSum*rightSum/rightN;
+            const score = leftVar + rightVar;
+            if (score < best.score - 1e-9) {
+                const thr = (pairs[i][0] + pairs[i+1][0]) / 2;
+                best = { score, feat: f, thr };
+            }
+        }
+    }
+
+    if (best.feat < 0) return { leaf: true, val: yMean };
+
+    const leftIdx = [], rightIdx = [];
+    for (let i=0; i<X.length; i++) (X[i][best.feat] <= best.thr ? leftIdx : rightIdx).push(i);
+    if (leftIdx.length === 0 || rightIdx.length === 0) return { leaf: true, val: yMean };
+
+    const lX = leftIdx.map(i => X[i]), lY = leftIdx.map(i => y[i]);
+    const rX = rightIdx.map(i => X[i]), rY = rightIdx.map(i => y[i]);
+    return {
+        leaf: false, feat: best.feat, thr: best.thr,
+        left: buildTree(lX, lY, depth+1, maxDepth, minSamples, featureSubset, rng),
+        right: buildTree(rX, rY, depth+1, maxDepth, minSamples, featureSubset, rng)
+    };
+}
+function predictTree(node, x) {
+    while (!node.leaf) node = x[node.feat] <= node.thr ? node.left : node.right;
+    return node.val;
+}
+
+class RandomForestModel {
+    constructor(cfg) { this.cfg = cfg; }
+    async fit(X, y) {
+        this.trees = [];
+        const rng = mulberry32(SEED);
+        const n = X.length;
+        for (let t=0; t<this.cfg.nTrees; t++) {
+            const idx = Array.from({length:n}, () => Math.floor(rng() * n));
+            const Xb = idx.map(i => X[i]), yb = idx.map(i => y[i]);
+            this.trees.push(buildTree(Xb, yb, 0, this.cfg.maxDepth, this.cfg.minSamples, this.cfg.featureSubset, rng));
+        }
+    }
+    predict(X) {
+        return X.map(x => {
+            let s = 0; for (const t of this.trees) s += predictTree(t, x);
+            return s / this.trees.length;
+        });
+    }
+    dispose() {}
+}
+
+class GradientBoostModel {
+    constructor(cfg) { this.cfg = cfg; }
+    async fit(X, y) {
+        this.base = y.reduce((a,b)=>a+b,0)/y.length;
+        this.trees = [];
+        const rng = mulberry32(SEED + 1);
+        const preds = new Array(y.length).fill(this.base);
+        const nFeat = X[0].length;
+        for (let r=0; r<this.cfg.nRounds; r++) {
+            const res = y.map((v, i) => v - preds[i]);
+            const tree = buildTree(X, res, 0, this.cfg.maxDepth, this.cfg.minSamples, nFeat, rng);
+            this.trees.push(tree);
+            for (let i=0; i<X.length; i++) preds[i] += this.cfg.learningRate * predictTree(tree, X[i]);
+        }
+    }
+    // `rounds` lets the selector read off every candidate boosting length from a
+    // single fit (staged prediction) instead of refitting once per candidate.
+    predict(X, rounds) {
+        const n = rounds === undefined ? this.trees.length : Math.min(rounds, this.trees.length);
+        return X.map(x => {
+            let p = this.base;
+            for (let i=0; i<n; i++) p += this.cfg.learningRate * predictTree(this.trees[i], x);
+            return p;
+        });
+    }
+    dispose() {}
+}
+
+// ANN = deep ensemble of N sub-networks:
+//   1. each member trains with a different seed and a 95% bootstrap sample
+//      → decorrelates per-network noise (variance reduction);
+//   2. the mean prediction is shrunk toward the training-y mean by `shrinkage`;
+//   3. predictions are clipped to the training-y range → no wild extrapolation.
+// yMean / yLo / yHi all come from the training split only. `shrinkage` is NOT
+// hand-set: it is one of the searched axes, and 0 is in the grid, so the inner
+// folds are free to reject it.
+class ANNModel {
+    constructor(inputSize, cfg) {
+        this.cfg = cfg;
+        this.inputSize = inputSize;
+        this.members = [];
+        const N = cfg.ensemble || 1;
+        for (let s = 0; s < N; s++) {
+            this.members.push(this._buildMember(inputSize, SEED + s * 1009));
+        }
+    }
+    _buildMember(inputSize, seed) {
+        const m = tf.sequential();
+        const reg = this.cfg.l2 ? tf.regularizers.l2({ l2: this.cfg.l2 }) : undefined;
+        this.cfg.hidden.forEach((u, i) => {
+            const ki = tf.initializers.heNormal({ seed: seed + i * 17 });
+            m.add(tf.layers.dense({
+                ...(i === 0 ? { inputShape: [inputSize] } : {}),
+                units: u, activation: 'relu',
+                kernelInitializer: ki,
+                kernelRegularizer: reg
+            }));
+            if (this.cfg.dropout > 0) m.add(tf.layers.dropout({ rate: this.cfg.dropout, seed: seed + 999 + i }));
+        });
+        m.add(tf.layers.dense({ units: 1, kernelInitializer: tf.initializers.heNormal({ seed: seed + 7777 }) }));
+        m.compile({ optimizer: tf.train.adam(this.cfg.lr), loss: 'meanAbsoluteError' });
+        return m;
+    }
+    async fit(X, y) {
+        const sortedY = [...y].sort((a, b) => a - b);
+        this.yMean = y.reduce((a, b) => a + b, 0) / y.length;
+        this.yLo = sortedY[Math.floor(sortedY.length * 0.02)];
+        this.yHi = sortedY[Math.floor(sortedY.length * 0.98)];
+
+        const rng = mulberry32(SEED + 31337);
+        for (let s = 0; s < this.members.length; s++) {
+            const sampleSize = Math.floor(X.length * (this.cfg.bootstrap || 1.0));
+            const idx = [];
+            for (let i = 0; i < sampleSize; i++) idx.push(Math.floor(rng() * X.length));
+            const Xb = idx.map(i => X[i]);
+            const yb = idx.map(i => y[i]);
+
+            const xT = tf.tensor2d(Xb);
+            const yT = tf.tensor2d(yb, [yb.length, 1]);
+            await this.members[s].fit(xT, yT, {
+                epochs: this.cfg.epochs,
+                batchSize: this.cfg.batchSize,
+                shuffle: true,
+                verbose: 0
+            });
+            xT.dispose(); yT.dispose();
+            if (s < this.members.length - 1) await tick();
+        }
+    }
+    predict(X) {
+        const xT = tf.tensor2d(X);
+        const out = new Array(X.length).fill(0);
+        for (const m of this.members) {
+            const p = m.predict(xT);
+            const arr = p.dataSync();
+            for (let i = 0; i < X.length; i++) out[i] += arr[i];
+            p.dispose();
+        }
+        xT.dispose();
+        const k = 1 - (this.cfg.shrinkage || 0);
+        const sh = (this.cfg.shrinkage || 0) * this.yMean;
+        return out.map(v => {
+            const blended = (v / this.members.length) * k + sh;
+            return Math.min(Math.max(blended, this.yLo), this.yHi);
+        });
+    }
+    dispose() { this.members.forEach(m => m.dispose()); }
+}
+
+// =========================================================================
+// MODEL SPECS + SEARCH SPACES
+// Every spec exposes the same interface, so the runner treats all five models
+// identically: a grid, a factory, and a human-readable label for a config.
+// `staged` marks a model that can score many candidates from one fit.
+// =========================================================================
+function gridProduct(axes) {
+    return Object.entries(axes).reduce(
+        (acc, [k, vals]) => acc.flatMap(o => vals.map(v => ({ ...o, [k]: v }))), [{}]
+    );
+}
+
+// Search spaces are small on purpose. At n=78 the inner-fold MAE that drives
+// selection is itself noisy, so a wider grid mostly buys more opportunities for
+// that noise to pick a winner that does not hold up (measured, see BUDGET above).
+// The ANN's 6 candidates are the SMALLEST tuned budget here - Gradient Boosting
+// searches 20 - so no result can be attributed to the proposed model having been
+// given a bigger search than its baselines.
+// (Linear regression is the unavoidable exception in the other direction: OLS has
+// no hyperparameters, so its "search" is a single fit. That is a property of the
+// method, not a budget decision.)
+const MODEL_SPECS = [
+    {
+        name: 'Linear Regression',
+        space: 'none — OLS has no hyperparameters',
+        grid: [{}],
+        make: () => new LinearModel(),
+        label: () => 'OLS'
+    },
+    {
+        name: 'Ridge Regression',
+        space: 'λ ∈ {0.01, 0.1, 1, 10, 100}',
+        grid: gridProduct({ lambda: [0.01, 0.1, 1, 10, 100] }),
+        make: h => new RidgeModel(h.lambda),
+        label: h => `λ=${h.lambda}`
+    },
+    {
+        name: 'Random Forest',
+        space: 'maxDepth ∈ {3,6,10} × mtry ∈ {p/3, p}; 60 trees',
+        grid: gridProduct({ maxDepth: [3, 6, 10], mtry: ['p/3', 'p'] }),
+        make: (h, p) => new RandomForestModel({
+            nTrees: 60, maxDepth: h.maxDepth, minSamples: 2,
+            featureSubset: h.mtry === 'p' ? p : Math.max(1, Math.round(p / 3))
+        }),
+        label: h => `depth=${h.maxDepth}, mtry=${h.mtry}`
+    },
+    {
+        name: 'Gradient Boosting',
+        space: 'lr ∈ {0.05, 0.1} × maxDepth ∈ {2,3} × rounds ∈ {25,50,100,200,300}',
+        grid: gridProduct({ learningRate: [0.05, 0.1], maxDepth: [2, 3] }),
+        staged: { key: 'nRounds', values: [25, 50, 100, 200, 300] },
+        make: h => new GradientBoostModel({
+            nRounds: h.nRounds || 300, maxDepth: h.maxDepth,
+            learningRate: h.learningRate, minSamples: 2
+        }),
+        label: h => `lr=${h.learningRate}, depth=${h.maxDepth}, rounds=${h.nRounds}`
+    },
+    {
+        name: 'ANN (proposed)',
+        space: 'hidden ∈ {[32,16], [48,24]} × shrinkage ∈ {0, 0.15, 0.30}',
+        grid: gridProduct({ hidden: [[32,16], [48,24]], shrinkage: [0, 0.15, 0.30] }),
+        make: (h, p, phase) => new ANNModel(p, {
+            ...ANN_BASE,
+            hidden: h.hidden,
+            shrinkage: h.shrinkage,
+            ensemble: phase === 'select' ? BUDGET.selEnsemble : BUDGET.refitEnsemble,
+            epochs:   phase === 'select' ? BUDGET.selEpochs   : BUDGET.refitEpochs
+        }),
+        label: h => `hidden=[${h.hidden}], shrink=${h.shrinkage}`
+    }
+];
+
+// =========================================================================
+// FOLD GENERATION
+// One shuffle, one set of folds, applied to ALL models.
+// =========================================================================
+function foldsOver(indices, k, seed) {
+    const idx = [...indices];
+    seededShuffle(idx, seed);
+    const folds = [];
+    const sz = Math.floor(idx.length / k);
+    for (let i=0; i<k; i++) {
+        const start = i * sz;
+        const end = (i === k-1) ? idx.length : start + sz;
+        const test = idx.slice(start, end);
+        const train = idx.slice(0, start).concat(idx.slice(end));
+        folds.push({ train, test });
+    }
+    return folds;
+}
+// Grouped variant: splits whole papers, never rows. Used for the inner folds of
+// LOPO so that selection is judged on cross-paper transfer, matching the outer loop.
+function groupedFoldsOver(indices, paperIds, k, seed) {
+    const papers = [...new Set(indices.map(i => paperIds[i]))];
+    seededShuffle(papers, seed);
+    const kk = Math.min(k, papers.length);
+    const buckets = Array.from({length: kk}, () => new Set());
+    papers.forEach((p, i) => buckets[i % kk].add(p));
+    return buckets.map(b => ({
+        train: indices.filter(i => !b.has(paperIds[i])),
+        test:  indices.filter(i =>  b.has(paperIds[i]))
+    })).filter(f => f.test.length > 0 && f.train.length > 0);
+}
+function makeKFolds(n, k, seed) { return foldsOver(Array.from({length:n}, (_,i)=>i), k, seed); }
+function makeLOPOFolds(paperIds) {
+    const unique = [...new Set(paperIds)];
+    return unique.map(p => ({
+        train: paperIds.map((id, i) => id !== p ? i : -1).filter(i => i >= 0),
+        test:  paperIds.map((id, i) => id === p ? i : -1).filter(i => i >= 0),
+        held: p
+    }));
+}
+
+// =========================================================================
+// FOLD PREPARATION
+// The single place where a fold becomes matrices. Order matters:
+//   1. fit imputer on TRAIN rows only
+//   2. apply it to train and held-out rows
+//   3. build features - row-wise, no cross-row statistics
+//   4. fit min-max scaler on TRAIN, apply to both
+// Identical for every model and for inner and outer folds alike.
+// =========================================================================
+function prepareFold(rows, train, test, mode) {
+    const imp = fitImputer(rows, train);
+    const trRows = applyImputer(train.map(j => rows[j]), imp);
+    const teRows = applyImputer(test.map(j => rows[j]), imp);
+    const { Xtrain, Xtest, min, range } = normalize(buildX(trRows, mode), buildX(teRows, mode));
+    return { Xtrain, Xtest, imputer: imp, min, range };
+}
+
+// =========================================================================
+// HYPERPARAMETER SELECTION  (inner CV, training rows only)
+// Same rule for all five models: inner 3-fold over the outer training split,
+// candidate with the lowest mean MAE (µm) wins, ties -> earlier (simpler) entry.
+// =========================================================================
+async function selectHyperparams(spec, rows, trainIdx, yall, mode, grouped, paperIds, onProgress) {
+    if (spec.grid.length === 1 && !spec.staged) return { chosen: spec.grid[0], table: null };
+
+    const inner = grouped
+        ? groupedFoldsOver(trainIdx, paperIds, INNER_K, SEED + 77)
+        : foldsOver(trainIdx, INNER_K, SEED + 77);
+
+    // candidate -> list of inner-fold MAEs
+    const scores = new Map();
+    const push = (key, cfg, mae) => {
+        if (!scores.has(key)) scores.set(key, { cfg, maes: [] });
+        scores.get(key).maes.push(mae);
+    };
+
+    for (const f of inner) {
+        const { Xtrain, Xtest } = prepareFold(rows, f.train, f.test, mode);
+        const ytr = f.train.map(j => yall[j]);
+        const act = unlog(f.test.map(j => yall[j]));
+        for (const h of spec.grid) {
+            const m = spec.make(h, Xtrain[0].length, 'select');
+            await m.fit(Xtrain, ytr);
+            if (spec.staged) {
+                // one fit scores every value of the staged axis
+                for (const v of spec.staged.values) {
+                    const cfg = { ...h, [spec.staged.key]: v };
+                    push(spec.label(cfg), cfg, metrics(unlog(m.predict(Xtest, v)), act).mae);
+                }
+            } else {
+                push(spec.label(h), h, metrics(unlog(m.predict(Xtest)), act).mae);
+            }
+            m.dispose();
+            if (onProgress) onProgress();
+            await tick();
+        }
+    }
+
+    let best = null;
+    for (const { cfg, maes } of scores.values()) {
+        const mae = maes.reduce((a,b)=>a+b,0) / maes.length;
+        if (!best || mae < best.mae - 1e-12) best = { cfg, mae };
+    }
+    return { chosen: best.cfg, table: [...scores.values()] };
+}
+
+// =========================================================================
+// PERMUTATION IMPORTANCE ON HELD-OUT ROWS
+// Fitted model + held-out rows of the same fold. A feature is shuffled among
+// the held-out rows only, together with every column derived from it, and the
+// rise in MAE is recorded. Averaged over IMP_REPEATS shuffles per fold, then
+// over folds. Nothing here touches a row the model was trained on.
+// =========================================================================
+function heldOutImportance(model, Xtest, yteLog, mode, staged) {
+    const groups = featureGroups(mode);
+    const act = unlog(yteLog);
+    const call = X => unlog(staged !== undefined ? model.predict(X, staged) : model.predict(X));
+    const baseMae = metrics(call(Xtest), act).mae;
+    const n = Xtest.length;
+    return groups.map((cols, f) => {
+        if (n < 2) return 0;                       // a 1-row fold cannot be permuted
+        let acc = 0;
+        for (let r = 0; r < IMP_REPEATS; r++) {
+            const perm = Array.from({length: n}, (_, i) => i);
+            seededShuffle(perm, SEED + f * 31 + r * 7919);
+            const Xp = Xtest.map(row => [...row]);
+            for (const c of cols) {
+                const orig = Xtest.map(x => x[c]);
+                for (let i = 0; i < n; i++) Xp[i][c] = orig[perm[i]];
+            }
+            acc += metrics(call(Xp), act).mae - baseMae;
+        }
+        return acc / IMP_REPEATS;
+    });
+}
+
+// =========================================================================
+// EVALUATION RUNNERS
+// =========================================================================
+async function runFoldEval(spec, folds, rows, yall, paperIds, mode, opts = {}) {
+    const { grouped = false, collectPreds = false, collectImportance = false, pooled = false } = opts;
+    const foldMetrics = [];
+    const pooledPreds = [], pooledActuals = [], pooledMissing = [];
+    const imputerLog = [], chosenLog = [], importanceLog = [];
+
+    for (let i=0; i<folds.length; i++) {
+        const { train, test } = folds[i];
+        ui.status.innerText = `${opts.tag}: ${spec.name} — fold ${i+1}/${folds.length} (tuning)…`;
+        const { chosen } = await selectHyperparams(spec, rows, train, yall, mode, grouped, paperIds);
+        chosenLog.push(spec.label(chosen));
+
+        ui.status.innerText = `${opts.tag}: ${spec.name} — fold ${i+1}/${folds.length} (fitting)…`;
+        const { Xtrain, Xtest, imputer } = prepareFold(rows, train, test, mode);
+        imputerLog.push(imputer);
+        const ytr = train.map(j => yall[j]), yte = test.map(j => yall[j]);
+        const model = spec.make(chosen, Xtrain[0].length, 'refit');
+        await model.fit(Xtrain, ytr);
+
+        const stagedRounds = spec.staged ? chosen[spec.staged.key] : undefined;
+        const preds = unlog(stagedRounds !== undefined ? model.predict(Xtest, stagedRounds) : model.predict(Xtest));
+        const actuals = unlog(yte);
+        foldMetrics.push(metrics(preds, actuals));
+
+        if (collectImportance) importanceLog.push(heldOutImportance(model, Xtest, yte, mode, stagedRounds));
+        if (collectPreds || pooled) {
+            pooledPreds.push(...preds);
+            pooledActuals.push(...actuals);
+            pooledMissing.push(...test.map(j => rowHasMissing(rows[j])));
+        }
+        model.dispose();
+        await tick();
+    }
+
+    const out = { pooledPreds, pooledActuals, pooledMissing, imputerLog, chosenLog, importanceLog };
+    if (pooled) {
+        Object.assign(out, metrics(pooledPreds, pooledActuals));
+    } else {
+        out.mae = meanStd(foldMetrics.map(m => m.mae));
+        out.rmse = meanStd(foldMetrics.map(m => m.rmse));
+        out.r2 = meanStd(foldMetrics.map(m => m.r2));
+    }
+    return out;
+}
+
+// =========================================================================
+// FINAL ANN (trained on 100% of data for live prediction)
+// Hyperparameters selected by the same inner-CV rule, here over all rows -
+// which is legitimate because at deployment every row IS a training row.
+// =========================================================================
+async function trainFinalANN(rows, yall, paperIds, mode) {
+    if (finalAnnModel) finalAnnModel.dispose();
+    const spec = MODEL_SPECS.find(s => s.name.startsWith('ANN'));
+    const allIdx = rows.map((_, i) => i);
+    const { chosen } = await selectHyperparams(spec, rows, allIdx, yall, mode, false, paperIds);
+
+    finalImpute = fitImputer(rows, allIdx);
+    finalFeatureMode = mode;
+    const Xall = buildX(applyImputer(rows, finalImpute), mode);
+    const { Xtrain: XnormArr, min, max, range } = normalize(Xall, []);
+    const model = spec.make(chosen, Xall[0].length, 'refit');
+    await model.fit(XnormArr, yall);
+    finalAnnModel = model;
+    finalNorm = { min, max, range };
+    return spec.label(chosen);
+}
+
+// =========================================================================
+// UI: Run full evaluation
+// =========================================================================
+ui.runEvalBtn.addEventListener('click', async () => {
+    if (dataset.length < 10) { alert('Need at least 10 data points.'); return; }
+    ui.runEvalBtn.disabled = true;
+    ui.runEvalBtn.innerHTML = '<span class="loader"></span> Running...';
+    ui.predictBtn.disabled = true; ui.predictBtn.classList.add('btn-disabled');
+    ui.annDetail.classList.add('hidden');
+
+    const mode = FEATURE_MODE;
+
+    const t0 = performance.now();
+    const rows = dataset;
+    const yall = processLabels(dataset);
+    const paperIds = dataset.map(d => d.paperId);
+
+    const kFolds    = makeKFolds(dataset.length, K_FOLDS, SEED);
+    const lopoFolds = makeLOPOFolds(paperIds);
+
+    // ---- 5-FOLD CV (same folds, same features, same selection rule) ----
+    ui.cvResultsBody.innerHTML = '';
+    ui.cvResultsBox.classList.remove('hidden');
+    const cvResults = {};
+    let annCVPooled = null, cvImputerLog = null;
+    importanceByModel = {};
+    for (const spec of MODEL_SPECS) {
+        const r = await runFoldEval(spec, kFolds, rows, yall, paperIds, mode, {
+            tag: '5-fold CV', collectPreds: spec.name.startsWith('ANN'), collectImportance: true
+        });
+        cvResults[spec.name] = r;
+        if (!cvImputerLog) cvImputerLog = r.imputerLog;
+        if (spec.name.startsWith('ANN')) annCVPooled = r;
+        importanceByModel[spec.name] = aggregateImportance(r.importanceLog);
+        appendMetricRow(ui.cvResultsBody, spec.name, r, false);
+    }
+    highlightBest(ui.cvResultsBody, cvResults, false);
+
+    // ---- LOPO ----
+    ui.lopoResultsBody.innerHTML = '';
+    ui.lopoResultsBox.classList.remove('hidden');
+    const lopoResults = {};
+    let lopoImputerLog = null;
+    for (const spec of MODEL_SPECS) {
+        const r = await runFoldEval(spec, lopoFolds, rows, yall, paperIds, mode, {
+            tag: 'LOPO', grouped: true, pooled: true
+        });
+        lopoResults[spec.name] = r;
+        if (!lopoImputerLog) lopoImputerLog = r.imputerLog;
+        appendMetricRow(ui.lopoResultsBody, spec.name, r, true);
+    }
+    highlightBest(ui.lopoResultsBody, lopoResults, true);
+
+    // ---- Final ANN on 100% of data ----
+    ui.status.innerText = 'Training final ANN on 100% data…';
+    const finalCfgLabel = await trainFinalANN(rows, yall, paperIds, mode);
+
+    // ---- Panels ----
+    renderProtocol(cvResults, finalCfgLabel);
+    renderImputeAudit(cvImputerLog, lopoImputerLog);
+
+    const ann = cvResults['ANN (proposed)'];
+    ui.annMae.innerText = `${ann.mae.mean.toFixed(3)} ± ${ann.mae.std.toFixed(3)}`;
+    ui.annRmse.innerText = `${ann.rmse.mean.toFixed(3)} ± ${ann.rmse.std.toFixed(3)}`;
+    ui.annR2.innerText = `${ann.r2.mean.toFixed(3)} ± ${ann.r2.std.toFixed(3)}`;
+    ui.annDetail.classList.remove('hidden');
+    drawPredVsActual(annCVPooled.pooledActuals, annCVPooled.pooledPreds, annCVPooled.pooledMissing);
+    populateImportanceSelector();
+
+    const dt = ((performance.now() - t0) / 1000).toFixed(1);
+    ui.status.innerText = `Done in ${dt}s.`;
+    ui.runEvalBtn.disabled = false;
+    ui.runEvalBtn.innerText = 'Re-run Full Evaluation';
+    ui.predictBtn.disabled = false; ui.predictBtn.classList.remove('btn-disabled');
+});
+
+function aggregateImportance(logs) {
+    if (!logs.length) return null;
+    return featureNames.map((name, f) => {
+        const s = meanStd(logs.map(l => l[f]));
+        const missFrac = dataset.filter(d => isMissing(d.features[FEATURE_KEYS[f]])).length / dataset.length;
+        return { feature: name, mean: s.mean, std: s.std, missFrac };
+    });
+}
+
+function appendMetricRow(body, name, r, pooled) {
+    const fmt = pooled
+        ? [r.mae.toFixed(3), r.rmse.toFixed(3), r.r2.toFixed(3)]
+        : [`${r.mae.mean.toFixed(3)} ± ${r.mae.std.toFixed(3)}`,
+           `${r.rmse.mean.toFixed(3)} ± ${r.rmse.std.toFixed(3)}`,
+           `${r.r2.mean.toFixed(3)} ± ${r.r2.std.toFixed(3)}`];
+    const row = document.createElement('tr');
+    row.innerHTML = `<td class="py-1.5 text-gray-300 font-semibold">${name}</td>
+        <td class="py-1.5">${fmt[0]}</td><td class="py-1.5">${fmt[1]}</td><td class="py-1.5">${fmt[2]}</td>`;
+    body.appendChild(row);
+}
+
+function highlightBest(body, results, pooled) {
+    const names = Object.keys(results);
+    const get = (n, m) => pooled ? results[n][m] : results[n][m].mean;
+    const bestMae  = names.reduce((b,n) => get(n,'mae')  < get(b,'mae')  ? n : b);
+    const bestRmse = names.reduce((b,n) => get(n,'rmse') < get(b,'rmse') ? n : b);
+    const bestR2   = names.reduce((b,n) => get(n,'r2')   > get(b,'r2')   ? n : b);
+    [...body.children].forEach((row, i) => {
+        const n = names[i];
+        if (n === bestMae)  row.children[1].classList.add('text-emerald-400','font-bold');
+        if (n === bestRmse) row.children[2].classList.add('text-emerald-400','font-bold');
+        if (n === bestR2)   row.children[3].classList.add('text-emerald-400','font-bold');
+    });
+}
+
+function renderProtocol(cvResults, finalCfgLabel) {
+    ui.protocolBody.innerHTML = '';
+    for (const spec of MODEL_SPECS) {
+        const chosen = cvResults[spec.name].chosenLog;
+        const tally = {};
+        chosen.forEach(c => tally[c] = (tally[c] || 0) + 1);
+        const summary = Object.entries(tally).sort((a,b) => b[1]-a[1])
+            .map(([c,n]) => `${c} <span class="text-gray-500">×${n}</span>`).join('<br>');
+        const nCand = spec.staged
+            ? spec.grid.length * spec.staged.values.length
+            : spec.grid.length;
+        const row = document.createElement('tr');
+        row.innerHTML = `<td class="py-2 text-gray-300 font-semibold align-top">${spec.name}</td>
+            <td class="py-2 text-gray-400 align-top">${spec.space}<br><span class="text-[10px] text-gray-600">${nCand} candidate${nCand===1?'':'s'}</span></td>
+            <td class="py-2 text-gray-400 align-top text-[11px]">${summary || '—'}</td>
+            <td class="py-2 text-gray-400 align-top text-[11px]">${spec.name.startsWith('ANN') ? finalCfgLabel : '<span class="text-gray-600">not deployed</span>'}</td>`;
+        ui.protocolBody.appendChild(row);
+    }
+    ui.protocolBox.classList.remove('hidden');
+}
+
+function renderImputeAudit(cvLog, lopoLog) {
+    ui.imputeBody.innerHTML = '';
+    FEATURE_KEYS.forEach((k, j) => {
+        const nMissing = dataset.filter(d => isMissing(d.features[k])).length;
+        const cv = meanStd(cvLog.map(imp => imp[k].value));
+        const lopoVals = lopoLog.map(imp => imp[k].value);
+        const lo = Math.min(...lopoVals), hi = Math.max(...lopoVals);
+        const full = finalImpute[k].value;
+        const dim = nMissing === 0 ? 'text-gray-600' : 'text-gray-300';
+        const row = document.createElement('tr');
+        row.innerHTML = `<td class="py-1.5 font-semibold ${dim}">${featureNames[j]}</td>
+            <td class="py-1.5 ${nMissing ? 'text-amber-400' : 'text-gray-600'}">${nMissing}/${dataset.length}</td>
+            <td class="py-1.5 ${dim}">${nMissing ? `${cv.mean.toFixed(3)} ± ${cv.std.toFixed(3)}` : '—'}</td>
+            <td class="py-1.5 ${dim}">${nMissing ? `${lo.toFixed(3)} – ${hi.toFixed(3)}` : '—'}</td>
+            <td class="py-1.5 ${dim}">${nMissing ? full.toFixed(3) : '—'}</td>`;
+        ui.imputeBody.appendChild(row);
+    });
+    ui.imputeBox.classList.remove('hidden');
+}
+
+// =========================================================================
+// PREDICTION
+// =========================================================================
+ui.predictBtn.addEventListener('click', () => {
+    if (!finalAnnModel || !finalImpute) return;
+    const f = {};
+    const imputed = [];
+    FEATURE_KEYS.forEach((k, j) => {
+        const x = parseFloat(ui['pred_' + k].value);
+        if (isNaN(x)) { f[k] = finalImpute[k].value; imputed.push(featureNames[j]); }
+        else f[k] = x;
+    });
+    const processed = buildX([{ features: f }], finalFeatureMode);
+    const normed = processed.map(r => r.map((x, j) => (x - finalNorm.min[j]) / finalNorm.range[j]));
+    const val = Math.exp(finalAnnModel.predict(normed)[0]) - 1;
+    ui.predictionResult.innerText = `${val.toFixed(4)} µm`;
+    ui.predictNote.innerText = imputed.length
+        ? `Imputed from the training mean: ${imputed.join(', ')}`
+        : '';
+});
+
+// =========================================================================
+// CHARTS
+// =========================================================================
+function drawPredVsActual(actuals, preds, hasMissing) {
+    if (predActualChart) predActualChart.destroy();
+    const complete = [], partial = [];
+    actuals.forEach((a, i) => {
+        (hasMissing && hasMissing[i] ? partial : complete).push({ x: a, y: preds[i] });
+    });
+    const maxVal = Math.max(...actuals, ...preds) * 1.1;
+    predActualChart = new Chart(ui.predActualChart, {
+        type: 'scatter',
+        data: { datasets: [
+            { label: 'Fully reported', data: complete, backgroundColor: 'rgba(56,189,248,0.75)' },
+            { label: 'Contains imputed feature', data: partial, backgroundColor: 'rgba(245,158,11,0.75)' },
+            { label: 'Ideal', type: 'line', data: [{x:0,y:0},{x:maxVal,y:maxVal}], borderColor: 'rgba(255,99,132,0.8)', pointRadius: 0 }
+        ]},
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: { x: { title: {display:true, text:'Actual (µm)', color:'#9ca3af'}, ticks:{color:'#9ca3af'} },
+                      y: { title: {display:true, text:'Predicted (µm)', color:'#9ca3af'}, ticks:{color:'#9ca3af'} } },
+            plugins: { legend: {labels:{color:'#d1d5db', boxWidth:10, font:{size:10}}} }
+        }
+    });
+}
+
+function populateImportanceSelector() {
+    ui.impModel.innerHTML = MODEL_SPECS
+        .map(s => `<option value="${s.name}"${s.name.startsWith('ANN') ? ' selected' : ''}>${s.name}</option>`).join('');
+    ui.impModel.onchange = () => drawImportance(importanceByModel[ui.impModel.value]);
+    drawImportance(importanceByModel['ANN (proposed)']);
+}
+
+function drawImportance(arr) {
+    if (!arr) return;
+    if (importanceChart) importanceChart.destroy();
+    const sorted = [...arr].sort((a,b) => b.mean - a.mean);
+    importanceChart = new Chart(ui.importanceChart, {
+        type: 'bar',
+        data: {
+            labels: sorted.map(d => d.missFrac > 0.5 ? `${d.feature} *` : d.feature),
+            datasets: [
+                {
+                    label: 'ΔMAE (µm)',
+                    data: sorted.map(d => d.mean),
+                    backgroundColor: sorted.map(d => d.missFrac > 0.5 ? 'rgba(245,158,11,0.55)' : 'rgba(34,211,238,0.7)')
+                },
+                {
+                    // floating bar rendered as a thin whisker: mean ± 1 std across folds
+                    label: '± 1 std across folds',
+                    data: sorted.map(d => [d.mean - d.std, d.mean + d.std]),
+                    backgroundColor: 'rgba(226,232,240,0.85)',
+                    barThickness: 2
+                }
+            ]
+        },
+        options: {
+            indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+            scales: {
+                x: { title: {display:true, text:'ΔMAE on held-out rows (µm)', color:'#9ca3af'}, ticks:{color:'#9ca3af'} },
+                y: { ticks:{color:'#9ca3af'}, stacked: true }
+            },
+            plugins: {
+                legend: { display: false },
+                tooltip: { callbacks: {
+                    label: ctx => ctx.datasetIndex === 0
+                        ? `ΔMAE ${sorted[ctx.dataIndex].mean.toFixed(3)} ± ${sorted[ctx.dataIndex].std.toFixed(3)} µm`
+                        : `${(sorted[ctx.dataIndex].missFrac*100).toFixed(0)}% of values imputed`
+                } }
+            }
+        }
+    });
+}
+
+window.onload = async () => {
+    // CPU backend is faster than WebGL for tiny networks on small data
+    // (GPU upload/download overhead dominates the compute per batch).
+    try { await tf.setBackend('cpu'); await tf.ready(); } catch (e) {}
+    buildDataset();
+};
+</script>
+</body>
+</html>
